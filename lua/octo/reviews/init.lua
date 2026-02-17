@@ -195,6 +195,16 @@ function Review:focus_commit(right, left)
     files = {},
   }
   self.layout:open(self)
+
+  -- Resolve commit messages for display in the file panel
+  local function redraw_panel()
+    if self.layout.file_panel then
+      self.layout.file_panel:redraw()
+    end
+  end
+  self.layout.right:resolve_message(redraw_panel, pr.repo)
+  self.layout.left:resolve_message(redraw_panel, pr.repo)
+
   local function cb(files)
     self:set_files_and_select_first(files)
   end
@@ -225,6 +235,15 @@ function Review:initiate(opts)
     files = {},
   }
   self.layout:open(self)
+
+  -- Resolve commit messages for display in the file panel
+  local function redraw_panel()
+    if self.layout.file_panel then
+      self.layout.file_panel:redraw()
+    end
+  end
+  self.layout.left:resolve_message(redraw_panel)
+  self.layout.right:resolve_message(redraw_panel)
 
   pr:get_changed_files(function(files)
     self:set_files_and_select_first(files)

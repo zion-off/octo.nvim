@@ -388,7 +388,6 @@ function FilePanel:render()
 
   local right = current_review.layout.right
   local left = current_review.layout.left
-  local extra_info = { left:abbrev() .. ".." .. right:abbrev() }
   table.insert(lines, "")
   line_idx = line_idx + 1
 
@@ -397,9 +396,22 @@ function FilePanel:render()
   table.insert(lines, s)
   line_idx = line_idx + 1
 
-  for _, arg in ipairs(extra_info) do
-    s = arg
-    add_hl("DiffviewFilePanelPath", line_idx, 0, #s)
+  s = left:abbrev() .. ".." .. right:abbrev()
+  add_hl("DiffviewFilePanelPath", line_idx, 0, #s)
+  table.insert(lines, s)
+  line_idx = line_idx + 1
+
+  if left.message then
+    s = left:abbrev() .. " " .. left.message
+    add_hl("DiffviewFilePanelPath", line_idx, 0, #left:abbrev())
+    add_hl("DiffviewFilePanelFileName", line_idx, #left:abbrev() + 1, #s)
+    table.insert(lines, s)
+    line_idx = line_idx + 1
+  end
+  if right.message then
+    s = right:abbrev() .. " " .. right.message
+    add_hl("DiffviewFilePanelPath", line_idx, 0, #right:abbrev())
+    add_hl("DiffviewFilePanelFileName", line_idx, #right:abbrev() + 1, #s)
     table.insert(lines, s)
     line_idx = line_idx + 1
   end
