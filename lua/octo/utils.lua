@@ -1505,6 +1505,32 @@ function M.process_patch(patch)
   return hunks, left_ranges, right_ranges
 end
 
+---Extract a single file's patch from a full unified diff string.
+---@param diff string The full PR unified diff
+---@param file_path string The file path to extract
+---@return string? patch The patch portion (starting from @@) or nil if not found
+function M.extract_file_patch_from_diff(diff, file_path)
+  local escaped_path = vim.pesc(file_path)
+  -- Match the diff section for this file
+  -- Pattern: "diff --git a/<path> b/<path>" followed by content until next "diff --git" or end
+  local pattern = "diff %-%-git a/.- b/" .. escaped_path .. "\n(.-)\ndiff %-%-git "
+  local section = diff:match(pattern)
+  if not section then
+    -- Try matching at end of string (last file in diff)
+    pattern = "diff %-%-git a/.- b/" .. escaped_path .. "\n(.-)$"
+    section = diff:match(pattern)
+  end
+  if not section then
+    return nil
+  end
+  -- Extract just the patch portion (from first @@ onward)
+  local patch_start = section:find("@@")
+  if not patch_start then
+    return nil
+  end
+  return section:sub(patch_start)
+end
+
 ---calculate GitHub diffstat histogram bar
 ---@param stats { additions: integer, deletions: integer }
 function M.diffstat(stats)

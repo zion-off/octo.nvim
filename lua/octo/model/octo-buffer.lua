@@ -581,6 +581,70 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
     isMultiline = false
   end
 
+  -- Shared response handler for addPullRequestReviewThread mutation
+  local function handle_add_thread_response(output)
+    ---@type octo.mutations.AddPullRequestReviewThread
+    local resp = vim.json.decode(output).data.addPullRequestReviewThread
+
+    if utils.is_blank(resp) then
+      utils.error "Failed to create thread"
+      return
+    end
+
+    -- File-level comments (subjectType: FILE) return thread as null
+    if utils.is_blank(resp.thread) then
+      self:render_signs()
+      return
+    end
+
+    -- Register new thread id
+    local threads = self.threadsMetadata
+    local new_thread = nil
+    for _, t in pairs(threads) do
+      if tonumber(t.threadId) == -1 then
+        new_thread = t
+        break
+      end
+    end
+
+    -- Register new comment data
+    local new_comment = resp.thread.comments.nodes[1]
+    if new_thread then
+      new_thread.threadId = resp.thread.id
+      new_thread.replyTo = new_comment.id
+    end
+    if utils.trim(comment_metadata.body) == utils.trim(new_comment.body) then
+      local comments = self.commentsMetadata
+      for i, c in ipairs(comments) do
+        if tonumber(c.id) == -1 then
+          comments[i].id = new_comment.id
+          comments[i].savedBody = new_comment.body
+          comments[i].dirty = false
+          break
+        end
+      end
+      local review_threads = resp.thread.pullRequest.reviewThreads.nodes
+      if review then
+        review:update_threads(review_threads)
+      end
+      self:render_signs()
+    end
+  end
+
+  ---@param input octo.mutations.AddPullRequestReviewThreadInput
+  local function submit_review_thread(input)
+    gh.api.graphql {
+      query = mutations.add_pull_request_review_thread,
+      F = { input = input },
+      opts = {
+        cb = gh.create_callback {
+          failure = utils.print_err,
+          success = handle_add_thread_response,
+        },
+      },
+    }
+  end
+
   -- create new thread
   if review_level == "PR" then
     ---@type octo.mutations.AddPullRequestReviewThreadInput
@@ -593,171 +657,65 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
     }
 
     if isMultiline then
-      input["startLine"] = comment_metadata.snippetStartLine
-      input["line"] = comment_metadata.snippetEndLine
+      input.startLine = comment_metadata.snippetStartLine
+      input.line = comment_metadata.snippetEndLine
     end
 
-    gh.api.graphql {
-      query = mutations.add_pull_request_review_thread,
-      F = { input = input },
-      opts = {
-        cb = gh.create_callback {
-          failure = utils.print_err,
-          success = function(output)
-            ---@type octo.mutations.AddPullRequestReviewThread
-            local resp = vim.json.decode(output).data.addPullRequestReviewThread
-
-            if utils.is_blank(resp) then
-              utils.error "Failed to create thread"
-              return
-            end
-
-            -- Register new thread id
-            local threads = self.threadsMetadata
-            local new_thread = nil
-            for _, t in pairs(threads) do
-              if tonumber(t.threadId) == -1 then
-                new_thread = t
-                break
-              end
-            end
-
-            -- Register new comment data
-            local new_comment = resp.thread.comments.nodes[1]
-            if new_thread then
-              new_thread.threadId = resp.thread.id
-              new_thread.replyTo = new_comment.id
-            end
-            if utils.trim(comment_metadata.body) == utils.trim(new_comment.body) then
-              local comments = self.commentsMetadata
-              for i, c in ipairs(comments) do
-                if tonumber(c.id) == -1 then
-                  comments[i].id = new_comment.id
-                  comments[i].savedBody = new_comment.body
-                  comments[i].dirty = false
-                  break
-                end
-              end
-              local review_threads = resp.thread.pullRequest.reviewThreads.nodes
-              if review then
-                review:update_threads(review_threads)
-              end
-              self:render_signs()
-            end
-          end,
-        },
-      },
-    }
+    submit_review_thread(input)
   elseif review_level == "COMMIT" then
-    if isMultiline then
-      utils.error "Can't create a multiline comment at the commit level"
-      return
-    else
-      -- get the line number the comment is on
-      local line ---@type integer
-      for _, thread in
-        ipairs(vim.tbl_values(self.threadsMetadata) --[[@as ThreadMetadata[] ]])
-      do
-        if thread.threadId == -1 then
-          line = thread.line
-        end
-      end
+    -- Check if commit-level lines are valid in the PR HEAD context
+    local startLine = comment_metadata.snippetStartLine
+    local endLine = comment_metadata.snippetEndLine
+    local can_use_lines = false
 
-      -- we need to convert the line number to a diff line number (position)
-      local position = line
-      if file.status ~= "A" then
-        -- for non-added files (modified), check we are in a valid comment range
-        local diffhunks = {}
-        local diffhunk = ""
-        local left_comment_ranges, right_comment_ranges = {}, {}
-        diffhunks, left_comment_ranges, right_comment_ranges =
-          file.diffhunks, file.left_comment_ranges, file.right_comment_ranges
-        local comment_ranges ---@type [integer, integer][]
-        if not diffhunks then
-          utils.error "Diff hunks not found"
-          return
-        end
-        if comment_metadata.diffSide == "RIGHT" then
-          if not right_comment_ranges then
-            utils.error "Right comment ranges not found"
-            return
-          end
-          comment_ranges = right_comment_ranges
-        elseif comment_metadata.diffSide == "LEFT" then
-          if not left_comment_ranges then
-            utils.error "Left comment ranges not found"
-            return
-          end
-          comment_ranges = left_comment_ranges
-        end
-        local idx, offset = 0, 0
-        for i, range in ipairs(comment_ranges) do
-          if range[1] <= line and range[2] >= line then
-            diffhunk = diffhunks[i]
-            idx = i
-            break
-          end
-        end
-        for i, hunk in ipairs(diffhunks) do
-          if i < idx then
-            offset = offset + #vim.split(hunk, "\n")
-          end
-        end
-        if not vim.startswith(diffhunk, "@@") then
-          diffhunk = "@@ " .. diffhunk
-        end
-
-        local map = utils.generate_line2position_map(diffhunk)
-        if comment_metadata.diffSide == "RIGHT" then
-          position = map.right_side_lines[tostring(line)]
-        elseif comment_metadata.diffSide == "LEFT" then
-          position = map.left_side_lines[tostring(line)]
-        end
-        position = position + offset - 1
-      end
-
-      local query = graphql(
-        "add_pull_request_review_commit_thread_mutation",
-        layout.right.commit,
-        comment_metadata.body,
-        comment_metadata.reviewId,
-        comment_metadata.path,
-        position
-      )
-      gh.run {
-        args = { "api", "graphql", "-f", string.format("query=%s", query) },
-        cb = function(output, stderr)
-          if stderr and not utils.is_blank(stderr) then
-            utils.print_err(stderr)
-          elseif output then
-            ---@type octo.mutations.AddPullRequestReviewCommitThread
-            local r = vim.json.decode(output)
-            local resp = r.data.addPullRequestReviewComment
-            if not utils.is_blank(resp.comment) then
-              if utils.trim(comment_metadata.body) == utils.trim(resp.comment.body) then
-                local comments = self.commentsMetadata
-                for i, c in ipairs(comments) do
-                  if tonumber(c.id) == -1 then
-                    comments[i].id = resp.comment.id
-                    comments[i].savedBody = resp.comment.body
-                    comments[i].dirty = false
-                    break
-                  end
-                end
-                if review then
-                  local threads = resp.comment.pullRequest.reviewThreads.nodes
-                  review:update_threads(threads)
-                end
-                self:render_signs()
-              end
-            else
-              utils.error "Failed to create thread"
-              return
+    local pr_diff = review.pull_request.diff
+    if pr_diff and pr_diff ~= "" then
+      local pr_file_patch = utils.extract_file_patch_from_diff(pr_diff, comment_metadata.path)
+      if pr_file_patch then
+        local _, left_ranges, right_ranges = utils.process_patch(pr_file_patch)
+        local ranges = comment_metadata.diffSide == "RIGHT" and right_ranges or left_ranges
+        if ranges then
+          for _, range in ipairs(ranges) do
+            if range[1] <= startLine and range[2] >= endLine then
+              can_use_lines = true
+              break
             end
           end
-        end,
-      }
+        end
+      end
     end
+
+    ---@type octo.mutations.AddPullRequestReviewThreadInput
+    local input = {
+      pullRequestReviewId = comment_metadata.reviewId,
+      body = comment_metadata.body,
+      path = comment_metadata.path,
+    }
+
+    if can_use_lines then
+      -- Line-level comment (single or multiline)
+      input.side = comment_metadata.diffSide
+      input.line = startLine
+      if isMultiline then
+        input.startLine = startLine
+        input.line = endLine
+      end
+    else
+      -- Fallback: file-level comment when lines don't exist at PR HEAD
+      input.subjectType = "FILE"
+      input.body = string.format(
+        "> _Originally targeting %s lines %d-%d at commit %s_\n\n%s",
+        comment_metadata.diffSide,
+        startLine,
+        endLine,
+        layout.right.commit:sub(1, 7),
+        comment_metadata.body
+      )
+      -- Update metadata body so the response comparison succeeds
+      comment_metadata.body = input.body
+    end
+
+    submit_review_thread(input)
   end
 end
 

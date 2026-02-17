@@ -185,6 +185,7 @@ mutation {
   ---@field side DiffSide?
   ---@field startLine integer?
   ---@field line integer?
+  ---@field subjectType string?
 
   -- https://docs.github.com/en/graphql/reference/mutations#addpullrequestreviewthread
   M.add_pull_request_review_thread = [[
@@ -488,45 +489,6 @@ mutation {
   }
 }
 ]] .. fragments.reaction_groups .. fragments.review_thread_information .. fragments.review_thread_comment
-  ---@class octo.mutations.AddPullRequestReviewCommitThread
-  ---@field data {
-  ---  addPullRequestReviewComment: {
-  ---    comment: {
-  ---      id: string,
-  ---      body: string,
-  ---      pullRequest: {
-  ---        reviewThreads: {
-  ---          nodes: octo.ReviewThread[],
-  ---        },
-  ---      },
-  ---    },
-  ---  },
-  ---}
-
-  -- https://docs.github.com/en/graphql/reference/mutations#addpullrequestreviewcomment
-  M.add_pull_request_review_commit_thread = [[
-mutation {
-  addPullRequestReviewComment(input: {commitOID: "%s", body: """%s""", pullRequestReviewId: "%s", path: "%s", position: %d }) {
-    comment {
-      id
-      body
-      pullRequest {
-        reviewThreads(last:100) {
-          nodes {
-            ...ReviewThreadInformationFragment
-            comments(first:100) {
-              nodes {
-                ...ReviewThreadCommentFragment
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-]] .. fragments.reaction_groups .. fragments.review_thread_information .. fragments.review_thread_comment
-
   -- M.add_pull_request_review_comment = [[
   -- mutation {
   --   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: "%s", body: """%s"""}) {
