@@ -52,7 +52,7 @@ function M.update_layout_for_current_file()
   local thisfile = vim.api.nvim_buf_get_name(bufnr)
   local relative_path = vim.fn.fnamemodify(thisfile, ":~:.")
   local review = reviews.get_current_review()
-  if review == nil then
+  if review == nil or not review.layout.ready then
     return
   end
   local files = review.layout.files

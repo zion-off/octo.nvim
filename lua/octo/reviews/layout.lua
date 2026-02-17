@@ -67,6 +67,7 @@ function Layout:open(review)
 end
 
 function Layout:close()
+  self.ready = false
   for _, file in ipairs(self.files) do
     file:destroy()
   end
