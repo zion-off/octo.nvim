@@ -653,7 +653,7 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
       body = comment_metadata.body,
       path = comment_metadata.path,
       side = comment_metadata.diffSide,
-      line = comment_metadata.snippetStartLine,
+      line = comment_metadata.snippetEndLine,
     }
 
     if isMultiline then
@@ -695,7 +695,7 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
     if can_use_lines then
       -- Line-level comment (single or multiline)
       input.side = comment_metadata.diffSide
-      input.line = startLine
+      input.line = endLine
       if isMultiline then
         input.startLine = startLine
         input.line = endLine
