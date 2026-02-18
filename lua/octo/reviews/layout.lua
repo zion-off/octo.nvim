@@ -81,15 +81,50 @@ end
 
 function Layout:init_layout()
   self.left_winid = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_hl_ns(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS)
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffText", { background = "#5d425a" })
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffChange", { link = "DiffDelete" })
+  self:setup_highlight_namespace(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "left")
   vim.cmd "belowright vsp"
   self.right_winid = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_hl_ns(self.right_winid, constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS)
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffText", { background = "#39556f" })
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffChange", { link = "DiffAdd" })
+  self:setup_highlight_namespace(self.right_winid, constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "right")
   self.file_panel:open()
+end
+
+---Setup highlight namespace for a diff window
+---@param winid integer
+---@param ns integer
+---@param side "left"|"right"
+function Layout:setup_highlight_namespace(winid, ns, side)
+  vim.api.nvim_win_set_hl_ns(winid, ns)
+
+  -- Detect theme background
+  local is_dark = vim.o.background == "dark"
+
+  if side == "left" then
+    -- Left panel shows OLD/DELETED content - use red-tinted backgrounds
+    if is_dark then
+      vim.api.nvim_set_hl(ns, "DiffAdd", { bg = "#2a1a1a" })                 -- Red (old content that was removed)
+      vim.api.nvim_set_hl(ns, "DiffDelete", { bg = "#2a1a1a", fg = "#5a3a3a" })  -- Red bg + fg for diagonal lines
+      vim.api.nvim_set_hl(ns, "DiffChange", { bg = "#2a1a1a" })              -- Red
+      vim.api.nvim_set_hl(ns, "DiffText", { bg = "#5d425a" })                -- Brighter red-purple for emphasis
+    else
+      vim.api.nvim_set_hl(ns, "DiffAdd", { bg = "#ffd7d7" })                 -- Light red
+      vim.api.nvim_set_hl(ns, "DiffDelete", { bg = "#ffd7d7", fg = "#cc9999" })  -- Light red bg + fg for diagonal lines
+      vim.api.nvim_set_hl(ns, "DiffChange", { bg = "#ffd7d7" })              -- Light red
+      vim.api.nvim_set_hl(ns, "DiffText", { bg = "#ffb3b3" })                -- Darker red for emphasis
+    end
+  else
+    -- Right panel shows NEW/ADDED content - use green-tinted backgrounds
+    if is_dark then
+      vim.api.nvim_set_hl(ns, "DiffAdd", { bg = "#1a2a1a" })                 -- Green (new content)
+      vim.api.nvim_set_hl(ns, "DiffDelete", { bg = "#1a2a1a", fg = "#3a5a3a" })  -- Green bg + fg for diagonal lines
+      vim.api.nvim_set_hl(ns, "DiffChange", { bg = "#1a2a1a" })              -- Green
+      vim.api.nvim_set_hl(ns, "DiffText", { bg = "#39556f" })                -- Brighter blue-green for emphasis
+    else
+      vim.api.nvim_set_hl(ns, "DiffAdd", { bg = "#d7ffd7" })                 -- Light green
+      vim.api.nvim_set_hl(ns, "DiffDelete", { bg = "#d7ffd7", fg = "#99cc99" })  -- Light green bg + fg for diagonal lines
+      vim.api.nvim_set_hl(ns, "DiffChange", { bg = "#d7ffd7" })              -- Light green
+      vim.api.nvim_set_hl(ns, "DiffText", { bg = "#b3ffb3" })                -- Darker green for emphasis
+    end
+  end
 end
 
 --- Get the currently selected file
@@ -275,11 +310,13 @@ function Layout:recover_layout(state)
     vim.api.nvim_set_current_win(self.right_winid)
     vim.cmd "aboveleft vsp"
     self.left_winid = vim.api.nvim_get_current_win()
+    self:setup_highlight_namespace(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "left")
     self.file_panel:open()
   elseif not state.right_win then
     vim.api.nvim_set_current_win(self.left_winid)
     vim.cmd "belowright vsp"
     self.right_winid = vim.api.nvim_get_current_win()
+    self:setup_highlight_namespace(self.right_winid, constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "right")
     self.file_panel:open()
   end
 
