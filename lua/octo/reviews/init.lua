@@ -19,6 +19,8 @@ local ReviewThread = require("octo.reviews.thread").ReviewThread
 ---@field files FileEntry[]
 ---@field layout Layout
 ---@field pull_request PullRequest
+---@field commits table[]
+---@field selected_commit table|nil
 local Review = {}
 Review.__index = Review
 
@@ -33,6 +35,8 @@ function Review:new(pull_request)
     id = default_id,
     threads = {},
     files = {},
+    commits = {},
+    selected_commit = nil, -- nil = "All commits" (PR level)
   }
   setmetatable(this, self)
   return this
@@ -68,6 +72,27 @@ function Review:populate_threads(callback)
         elseif output then
           local resp = vim.json.decode(output)
           callback(resp)
+        end
+      end,
+    },
+  }
+end
+
+---Fetch commits for the PR
+---@param callback fun(commits: table[]): nil
+function Review:fetch_commits(callback)
+  gh.api.get {
+    "/repos/{repo}/pulls/{number}/commits",
+    format = { repo = self.pull_request.repo, number = self.pull_request.number },
+    opts = {
+      cb = function(output, stderr)
+        if stderr and not utils.is_blank(stderr) then
+          utils.error(stderr)
+          callback({})
+        elseif output then
+          local commits = vim.json.decode(output)
+          self.commits = commits
+          callback(commits)
         end
       end,
     },
@@ -195,6 +220,16 @@ function Review:focus_commit(right, left)
     files = {},
   }
   self.layout:open(self)
+
+  -- fetch commits for the PR
+  self:fetch_commits(function()
+    -- trigger re-render of file panel after commits are loaded
+    if self.layout and self.layout.file_panel then
+      self.layout.file_panel:render()
+      self.layout.file_panel:redraw()
+    end
+  end)
+
   local function cb(files)
     self:set_files_and_select_first(files)
   end
@@ -225,6 +260,15 @@ function Review:initiate(opts)
     files = {},
   }
   self.layout:open(self)
+
+  -- fetch commits for the PR
+  self:fetch_commits(function()
+    -- trigger re-render of file panel after commits are loaded
+    if self.layout and self.layout.file_panel then
+      self.layout.file_panel:render()
+      self.layout.file_panel:redraw()
+    end
+  end)
 
   pr:get_changed_files(function(files)
     self:set_files_and_select_first(files)

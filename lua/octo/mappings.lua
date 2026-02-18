@@ -440,9 +440,23 @@ return {
   select_entry = function()
     local layout = reviews.get_current_layout()
     if layout and layout.file_panel:is_open() then
-      local file = layout.file_panel:get_file_at_cursor()
-      if file then
-        layout:set_current_file(file)
+      local cursor_line = vim.api.nvim_win_get_cursor(layout.file_panel.winid)[1]
+
+      -- Check if cursor is on a commit line
+      -- NOTE: line_to_commit uses `false` as a sentinel value for "All commits" entry.
+      -- Using rawget() distinguishes between:
+      --   - Key exists with `false` value → "All commits" entry
+      --   - Key exists with table value → specific commit
+      --   - Key doesn't exist (rawget returns nil) → file entry or non-interactive line
+      if layout.file_panel.line_to_commit and rawget(layout.file_panel.line_to_commit, cursor_line) ~= nil then
+        -- Cursor is on a commit line
+        layout.file_panel:select_commit()
+      else
+        -- Cursor is on a file line
+        local file = layout.file_panel:get_file_at_cursor()
+        if file then
+          layout:set_current_file(file)
+        end
       end
     end
   end,

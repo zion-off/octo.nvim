@@ -62,6 +62,7 @@ function FilePanel:new(files)
     files = files,
     size = conf.file_panel.size,
     line_to_file = {}, -- Instance-level mapping to avoid shared state bugs
+    line_to_commit = {}, -- Instance-level mapping for commit navigation
   }
 
   setmetatable(this, self)
@@ -195,22 +196,41 @@ function FilePanel:highlight_file(file)
 end
 
 function FilePanel:highlight_prev_file()
-  if not (self:is_open() and self:buf_loaded()) or #self.files == 0 then
-    return
-  end
-
-  if not self._sorted_file_lines or #self._sorted_file_lines == 0 then
+  if not (self:is_open() and self:buf_loaded()) then
     return
   end
 
   local cursor = vim.api.nvim_win_get_cursor(self.winid)
   local current_line = cursor[1]
 
-  -- Find previous file line using cached sorted list
+  -- Collect all navigable lines (commits + files)
+  local all_lines = {}
+
+  -- Add commit lines
+  if self.line_to_commit then
+    for line, _ in pairs(self.line_to_commit) do
+      table.insert(all_lines, line)
+    end
+  end
+
+  -- Add file lines
+  if self._sorted_file_lines then
+    for _, line in ipairs(self._sorted_file_lines) do
+      table.insert(all_lines, line)
+    end
+  end
+
+  if #all_lines == 0 then
+    return
+  end
+
+  table.sort(all_lines)
+
+  -- Find previous line
   local prev_line = nil
-  for i = #self._sorted_file_lines, 1, -1 do
-    if self._sorted_file_lines[i] < current_line then
-      prev_line = self._sorted_file_lines[i]
+  for i = #all_lines, 1, -1 do
+    if all_lines[i] < current_line then
+      prev_line = all_lines[i]
       break
     end
   end
@@ -221,20 +241,39 @@ function FilePanel:highlight_prev_file()
 end
 
 function FilePanel:highlight_next_file()
-  if not (self:is_open() and self:buf_loaded()) or #self.files == 0 then
-    return
-  end
-
-  if not self._sorted_file_lines or #self._sorted_file_lines == 0 then
+  if not (self:is_open() and self:buf_loaded()) then
     return
   end
 
   local cursor = vim.api.nvim_win_get_cursor(self.winid)
   local current_line = cursor[1]
 
-  -- Find next file line using cached sorted list
+  -- Collect all navigable lines (commits + files)
+  local all_lines = {}
+
+  -- Add commit lines
+  if self.line_to_commit then
+    for line, _ in pairs(self.line_to_commit) do
+      table.insert(all_lines, line)
+    end
+  end
+
+  -- Add file lines
+  if self._sorted_file_lines then
+    for _, line in ipairs(self._sorted_file_lines) do
+      table.insert(all_lines, line)
+    end
+  end
+
+  if #all_lines == 0 then
+    return
+  end
+
+  table.sort(all_lines)
+
+  -- Find next line
   local next_line = nil
-  for _, line in ipairs(self._sorted_file_lines) do
+  for _, line in ipairs(all_lines) do
     if line > current_line then
       next_line = line
       break
@@ -243,6 +282,51 @@ function FilePanel:highlight_next_file()
 
   if next_line then
     pcall(vim.api.nvim_win_set_cursor, self.winid, { next_line, 0 })
+  end
+end
+
+---Get the commit at cursor position
+---@return table|false|nil commit The commit object, false for "All commits", or nil if not on a commit line
+function FilePanel:get_commit_at_cursor()
+  if not (self:is_open() and self:buf_loaded()) then
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(self.winid)
+  local line = cursor[1]
+
+  -- Check if cursor is on a commit line
+  if self.line_to_commit and self.line_to_commit[line] ~= nil then
+    return self.line_to_commit[line] -- can be false for "All commits", table for specific commit
+  end
+  return nil
+end
+
+---Select the commit at cursor and switch review level
+function FilePanel:select_commit()
+  local current_review = require("octo.reviews").get_current_review()
+  if not current_review then
+    return
+  end
+
+  local commit = self:get_commit_at_cursor()
+
+  -- If commit is false, that means "All commits" was selected
+  if commit == false then
+    -- Switch back to PR level
+    local pr = current_review.pull_request
+    current_review:focus_commit(pr.right.commit, pr.left.commit)
+  elseif commit then
+    -- Switch to commit level
+    -- Handle edge case: initial commits or orphan commits with no parents
+    local parent_sha
+    if commit.parents and type(commit.parents) == "table" and #commit.parents > 0 and commit.parents[1].sha then
+      parent_sha = commit.parents[1].sha
+    else
+      -- For initial commits, use the PR's base as parent
+      parent_sha = current_review.pull_request.left.commit
+    end
+    current_review:focus_commit(commit.sha, parent_sha)
   end
 end
 
@@ -481,8 +565,9 @@ function FilePanel:render()
   table.insert(lines, s)
   line_idx = line_idx + 1
 
-  -- Clear line-to-file mapping
+  -- Clear line mappings at the start to avoid stale state
   self.line_to_file = {}
+  self.line_to_commit = {}
 
   -- Build tree, collapse paths, and render
   local tree = build_file_tree(self.files)
@@ -496,22 +581,117 @@ function FilePanel:render()
   end
   table.sort(self._sorted_file_lines)
 
-  local right = current_review.layout.right
-  local left = current_review.layout.left
-  local extra_info = { left:abbrev() .. ".." .. right:abbrev() }
+  -- Render commit list
   table.insert(lines, "")
   line_idx = line_idx + 1
 
-  s = "Showing changes for:"
-  add_hl("DiffviewFilePanelTitle", line_idx, 0, #s)
+  -- Determine if we're at PR level or commit level
+  local review_level = current_review:get_level()
+  local is_pr_level = review_level == "PR"
+
+  -- Render "All commits" option
+  s = "All commits"
+  if is_pr_level then
+    add_hl("OctoFilePanelTitle", line_idx, 0, #s) -- Highlighted
+  else
+    add_hl("Comment", line_idx, 0, #s) -- Dimmed
+  end
   table.insert(lines, s)
+  self.line_to_commit[line_idx + 1] = false -- false means "All commits" (using false as sentinel to distinguish from missing key)
   line_idx = line_idx + 1
 
-  for _, arg in ipairs(extra_info) do
-    s = arg
-    add_hl("DiffviewFilePanelPath", line_idx, 0, #s)
+  -- Show indicator if commits haven't loaded yet or are empty
+  if #current_review.commits == 0 then
+    s = "  (loading...)"
+    add_hl("Comment", line_idx, 0, #s)
     table.insert(lines, s)
     line_idx = line_idx + 1
+  end
+
+  -- Helper function to wrap text to a given width
+  local function wrap_text(text, width, indent)
+    local wrapped_lines = {}
+
+    -- Handle empty or whitespace-only text
+    if not text or text:match("^%s*$") then
+      return { "" }
+    end
+
+    local current_line = ""
+
+    for word in text:gmatch("%S+") do
+      local test_line = current_line == "" and word or (current_line .. " " .. word)
+      if #test_line > width then
+        if current_line ~= "" then
+          table.insert(wrapped_lines, current_line)
+          current_line = indent .. word
+        else
+          -- Word is longer than width, truncate with ellipsis
+          if #word > width then
+            table.insert(wrapped_lines, word:sub(1, width - 1) .. "…")
+            current_line = ""
+          else
+            table.insert(wrapped_lines, word)
+            current_line = ""
+          end
+        end
+      else
+        current_line = test_line
+      end
+    end
+
+    if current_line ~= "" then
+      table.insert(wrapped_lines, current_line)
+    end
+
+    -- Ensure at least one line is returned
+    if #wrapped_lines == 0 then
+      return { "" }
+    end
+
+    return wrapped_lines
+  end
+
+  -- Render individual commits
+  local max_width = self.size - 4 -- Panel width minus margin (accounting for sign column)
+  for _, commit in ipairs(current_review.commits) do
+    -- Validate commit structure
+    if not commit or not commit.sha or not commit.commit then
+      goto continue
+    end
+
+    local short_sha = commit.sha:sub(1, 7)
+
+    -- Safely extract commit message
+    local message = ""
+    if commit.commit.message and type(commit.commit.message) == "string" then
+      message = commit.commit.message:match("^([^\n]+)") or commit.commit.message
+    else
+      message = "(no message)"
+    end
+
+    local first_line = short_sha .. " " .. message
+
+    -- Highlight if this is the selected commit
+    local is_selected = not is_pr_level and current_review.layout.right.commit == commit.sha
+    local hl_group = is_selected and "OctoFilePanelTitle" or "Comment"
+
+    -- Wrap the commit line if needed
+    local commit_lines = wrap_text(first_line, max_width, "  ") -- 2 spaces for continuation indent
+
+    for line_num, commit_line in ipairs(commit_lines) do
+      add_hl(hl_group, line_idx, 0, #commit_line)
+      table.insert(lines, commit_line)
+
+      -- Only map first line as navigable (skip wrapped continuation lines)
+      if line_num == 1 then
+        self.line_to_commit[line_idx + 1] = commit
+      end
+
+      line_idx = line_idx + 1
+    end
+
+    ::continue::
   end
 end
 
