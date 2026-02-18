@@ -291,7 +291,7 @@ function M.get_default_values()
       use_branch_name_as_title = false,
     },
     file_panel = {
-      size = 10,
+      size = 40, -- panel width in columns
       use_icons = true,
     },
     colors = {

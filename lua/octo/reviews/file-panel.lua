@@ -8,7 +8,6 @@ local renderer = require "octo.reviews.renderer"
 local M = {}
 
 local name_counter = 1
-local header_size = 1
 
 ---@class FilePanel
 ---@field files FileEntry[]
@@ -62,6 +61,7 @@ function FilePanel:new(files)
   local this = {
     files = files,
     size = conf.file_panel.size,
+    line_to_file = {}, -- Instance-level mapping to avoid shared state bugs
   }
 
   setmetatable(this, self)
@@ -99,12 +99,9 @@ function FilePanel:open()
 
   local conf = config.values
   self.size = conf.file_panel.size
-  --vim.cmd("wincmd H")
-  --vim.cmd("vsp")
-  --vim.cmd("vertical resize " .. self.width)
-  vim.cmd "sp"
-  vim.cmd "wincmd J"
-  vim.cmd("resize " .. self.size)
+  vim.cmd "vsp"
+  vim.cmd "wincmd H"
+  vim.cmd("vertical resize " .. self.size)
   self.winid = vim.api.nvim_get_current_win()
 
   for k, v in pairs(FilePanel.winopts) do
@@ -172,7 +169,10 @@ function FilePanel:get_file_at_cursor()
 
   local cursor = vim.api.nvim_win_get_cursor(self.winid)
   local line = cursor[1]
-  return self.files[utils.clamp(line - header_size, 1, #self.files)]
+
+  -- Use line_to_file mapping for tree rendering
+  -- No fallback needed - tree rendering doesn't have a simple line->file correlation
+  return self.line_to_file[line]
 end
 
 function FilePanel:highlight_file(file)
@@ -180,15 +180,16 @@ function FilePanel:highlight_file(file)
     return
   end
 
-  for i, f in ipairs(self.files) do
+  -- Find the line corresponding to this file in tree structure
+  for line, f in pairs(self.line_to_file) do
     if f == file then
-      pcall(vim.api.nvim_win_set_cursor, self.winid, { i + header_size, 0 })
+      pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
       vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      local line = i + header_size - 1
-      vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line, 0, {
-        end_line = line + 1,
+      vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line - 1, 0, {
+        end_line = line,
         hl_group = "OctoFilePanelSelectedFile",
       })
+      return
     end
   end
 end
@@ -198,12 +199,24 @@ function FilePanel:highlight_prev_file()
     return
   end
 
-  local cur = self:get_file_at_cursor()
-  for i, f in ipairs(self.files) do
-    if f == cur then
-      local line = utils.clamp(i + header_size - 1, header_size + 1, #self.files + header_size)
-      pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
+  if not self._sorted_file_lines or #self._sorted_file_lines == 0 then
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(self.winid)
+  local current_line = cursor[1]
+
+  -- Find previous file line using cached sorted list
+  local prev_line = nil
+  for i = #self._sorted_file_lines, 1, -1 do
+    if self._sorted_file_lines[i] < current_line then
+      prev_line = self._sorted_file_lines[i]
+      break
     end
+  end
+
+  if prev_line then
+    pcall(vim.api.nvim_win_set_cursor, self.winid, { prev_line, 0 })
   end
 end
 
@@ -212,13 +225,221 @@ function FilePanel:highlight_next_file()
     return
   end
 
-  local cur = self:get_file_at_cursor()
-  for i, f in ipairs(self.files) do
-    if f == cur then
-      local line = utils.clamp(i + header_size + 1, header_size, #self.files + header_size)
-      pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
+  if not self._sorted_file_lines or #self._sorted_file_lines == 0 then
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(self.winid)
+  local current_line = cursor[1]
+
+  -- Find next file line using cached sorted list
+  local next_line = nil
+  for _, line in ipairs(self._sorted_file_lines) do
+    if line > current_line then
+      next_line = line
+      break
     end
   end
+
+  if next_line then
+    pcall(vim.api.nvim_win_set_cursor, self.winid, { next_line, 0 })
+  end
+end
+
+-- Build a tree structure from file paths
+local function build_file_tree(files)
+  local tree = {}
+
+  for _, file in ipairs(files) do
+    local parts = vim.split(file.path, "/", { plain = true })
+    local current = tree
+
+    for i, part in ipairs(parts) do
+      if not current[part] then
+        current[part] = {
+          name = part,
+          is_file = i == #parts,
+          file_ref = i == #parts and file or nil,
+          children = {},
+        }
+      end
+      current = current[part].children
+    end
+  end
+
+  return tree
+end
+
+-- Collapse single-child directory chains (GitHub style)
+local function collapse_tree_paths(node)
+  local collapsed = {}
+
+  for name, item in pairs(node) do
+    if item.is_file then
+      -- Files are always added as-is
+      collapsed[name] = item
+    else
+      -- Check if this directory has only one child
+      local child_count = 0
+      local only_child_name = nil
+      local only_child = nil
+
+      for child_name, child_item in pairs(item.children) do
+        child_count = child_count + 1
+        only_child_name = child_name
+        only_child = child_item
+        if child_count > 1 then break end
+      end
+
+      if child_count == 1 and not only_child.is_file then
+        -- Collapse this directory with its only child (if child is also a directory)
+        local collapsed_name = name .. "/" .. only_child_name
+        local collapsed_child = collapse_tree_paths(only_child.children)
+        collapsed[collapsed_name] = {
+          name = collapsed_name,
+          is_file = false,
+          file_ref = nil,
+          children = collapsed_child,
+        }
+      else
+        -- Keep as separate node and recursively collapse its children
+        collapsed[name] = {
+          name = name,
+          is_file = false,
+          file_ref = nil,
+          children = collapse_tree_paths(item.children),
+        }
+      end
+    end
+  end
+
+  return collapsed
+end
+
+-- Recursively render tree nodes
+local function render_tree_node(node, prefix, is_last, lines, line_idx, file_panel, add_hl, conf, depth)
+  local items = {}
+  for _, child in pairs(node) do
+    table.insert(items, child)
+  end
+
+  -- Sort: directories first, then files, alphabetically
+  table.sort(items, function(a, b)
+    if a.is_file ~= b.is_file then
+      return not a.is_file
+    end
+    return a.name < b.name
+  end)
+
+  depth = depth or 0
+
+  for i, item in ipairs(items) do
+    local is_last_item = i == #items
+    local is_root = depth == 0
+    local branch = is_root and "" or (is_last_item and "└ " or "├ ")
+    local extension = prefix .. branch
+
+    local s = ""
+    local offset = 0
+    local file = item.file_ref
+
+    if file then
+      -- This is a file node - render with full details
+
+      -- tree structure
+      s = extension
+      if #extension > 0 then
+        add_hl("Comment", line_idx, 0, #extension)
+      end
+      offset = #s
+
+      -- icon
+      local icon = require("octo.reviews.renderer").get_file_icon(file.basename, file.extension, file_panel.render_data, line_idx, offset)
+      s = s .. icon
+      offset = offset + #icon
+
+      -- file name (basename only) - colored by git status
+      local filename_hl = "OctoFilePanelFileName"
+      if file.status == "A" then
+        filename_hl = "OctoDiffstatAdditions"  -- Green for added
+      elseif file.status == "D" then
+        filename_hl = "OctoDiffstatDeletions"  -- Red for deleted
+      end
+      add_hl(filename_hl, line_idx, offset, offset + #item.name)
+      s = s .. item.name
+      offset = offset + #item.name
+
+      -- GitHub-style compact stats: +12 -3
+      if file.stats then
+        local additions = (file.stats and file.stats.additions) or 0
+        local deletions = (file.stats and file.stats.deletions) or 0
+
+        if additions > 0 or deletions > 0 then
+          s = s .. " "
+          offset = offset + 1
+
+          if additions > 0 then
+            local add_str = "+" .. tostring(additions)
+            add_hl("OctoDiffstatAdditions", line_idx, offset, offset + #add_str)
+            s = s .. add_str
+            offset = offset + #add_str
+          end
+
+          if additions > 0 and deletions > 0 then
+            s = s .. " "
+            offset = offset + 1
+          end
+
+          if deletions > 0 then
+            local del_str = "-" .. tostring(deletions)
+            add_hl("OctoDiffstatDeletions", line_idx, offset, offset + #del_str)
+            s = s .. del_str
+            offset = offset + #del_str
+          end
+        end
+      end
+
+      -- viewer viewed state (after stats)
+      if not file.viewed_state or not utils.viewed_state_map[file.viewed_state] then
+        file.viewed_state = "UNVIEWED"
+      end
+      local viewerViewedStateIcon = utils.viewed_state_map[file.viewed_state].icon
+      local viewerViewedStateHl = utils.viewed_state_map[file.viewed_state].hl
+      s = s .. " "
+      offset = offset + 1
+      s = s .. viewerViewedStateIcon
+      add_hl(viewerViewedStateHl, line_idx, offset, offset + #viewerViewedStateIcon)
+      offset = offset + #viewerViewedStateIcon
+
+      -- Store mapping from line to file
+      file_panel.line_to_file[line_idx + 1] = file
+    else
+      -- This is a directory node
+      s = extension
+      if #extension > 0 then
+        add_hl("Comment", line_idx, 0, #extension)
+      end
+      s = s .. item.name .. "/"
+      add_hl("Directory", line_idx, #extension, #s)
+    end
+
+    table.insert(lines, s)
+    line_idx = line_idx + 1
+
+    -- Render children with updated prefix
+    if not item.is_file then
+      local child_prefix
+      if is_root then
+        -- For root items, children get no prefix (they start at base level)
+        child_prefix = ""
+      else
+        child_prefix = prefix .. (is_last_item and "  " or "│ ")
+      end
+      line_idx = render_tree_node(item.children, child_prefix, is_last_item, lines, line_idx, file_panel, add_hl, conf, depth + 1)
+    end
+  end
+
+  return line_idx
 end
 
 function FilePanel:render()
@@ -260,131 +481,20 @@ function FilePanel:render()
   table.insert(lines, s)
   line_idx = line_idx + 1
 
-  local max_changes_length = 0
-  local max_path_length = 0
-  for _, file in ipairs(self.files) do
-    local diffstat = utils.diffstat(file.stats)
-    ---@type integer
-    max_changes_length = math.max(max_changes_length, string.len(diffstat.total))
-    ---@type integer
-    max_path_length = math.max(max_path_length, string.len(file.path))
+  -- Clear line-to-file mapping
+  self.line_to_file = {}
+
+  -- Build tree, collapse paths, and render
+  local tree = build_file_tree(self.files)
+  local collapsed_tree = collapse_tree_paths(tree)
+  line_idx = render_tree_node(collapsed_tree, "", false, lines, line_idx, self, add_hl, conf, 0)
+
+  -- Cache sorted file lines for efficient navigation
+  self._sorted_file_lines = {}
+  for line, _ in pairs(self.line_to_file) do
+    table.insert(self._sorted_file_lines, line)
   end
-
-  for _, file in ipairs(self.files) do
-    local offset = 0
-    s = ""
-
-    -- diffstat histogram
-    if file.stats then
-      local diffstat = utils.diffstat(file.stats)
-
-      local file_changes_length = string.len(diffstat.total)
-      s = string.rep(" ", max_changes_length - file_changes_length) .. diffstat.total .. " "
-      offset = #s
-      if diffstat.additions > 0 then
-        s = s .. string.rep("■", diffstat.additions)
-        add_hl("OctoDiffstatAdditions", line_idx, offset, offset + (3 * diffstat.additions))
-        offset = offset + (3 * diffstat.additions)
-      end
-      if diffstat.deletions > 0 then
-        s = s .. string.rep("■", diffstat.deletions)
-        add_hl("OctoDiffstatDeletions", line_idx, offset, offset + (3 * diffstat.deletions))
-        offset = offset + (3 * diffstat.deletions)
-      end
-      if diffstat.neutral > 0 then
-        s = s .. string.rep("■", diffstat.neutral)
-        add_hl("OctoDiffstatNeutral", line_idx, offset, offset + (3 * diffstat.neutral))
-        offset = offset + (3 * diffstat.neutral)
-      end
-    end
-
-    -- status
-    add_hl(renderer.get_git_hl(file.status), line_idx, offset + 1, offset + 2)
-    s = s .. " " .. file.status
-    offset = #s
-
-    -- viewer viewed state
-    if not file.viewed_state then
-      file.viewed_state = "UNVIEWED"
-    end
-    local viewerViewedStateIcon = utils.viewed_state_map[file.viewed_state].icon
-    local viewerViewedStateHl = utils.viewed_state_map[file.viewed_state].hl
-    s = s .. " " .. viewerViewedStateIcon
-    add_hl(viewerViewedStateHl, line_idx, offset + 1, offset + 4)
-    offset = #s
-
-    -- icon
-    local icon = renderer.get_file_icon(file.basename, file.extension, self.render_data, line_idx, offset)
-    offset = offset + #icon
-
-    -- file path
-    add_hl("OctoFilePanelFileName", line_idx, offset, offset + #file.path)
-    s = s .. icon .. file.path
-
-    -- thread counts
-    local active, resolved, outdated, pending = M.thread_counts(file.path)
-    if active > 0 or resolved > 0 or pending > 0 or outdated > 0 then
-      -- white space to align count columns
-      offset = #s + 1
-      s = s .. string.rep(" ", max_path_length + 1 - string.len(file.path))
-    end
-    local segments = {
-      { count = active, prefix = "active: ", center_hl = "OctoBubbleBlue", delimiter_hl = "OctoBubbleDelimiterBlue" },
-      {
-        count = pending,
-        prefix = "pending: ",
-        center_hl = "OctoBubbleYellow",
-        delimiter_hl = "OctoBubbleDelimiterYellow",
-      },
-      {
-        count = resolved,
-        prefix = "resolved: ",
-        center_hl = "OctoBubbleGreen",
-        delimiter_hl = "OctoBubbleDelimiterGreen",
-      },
-      {
-        count = outdated,
-        prefix = "outdated: ",
-        center_hl = "OctoBubbleRed",
-        delimiter_hl = "OctoBubbleDelimiterRed",
-      },
-    }
-    for _, segment in ipairs(segments) do
-      if segment.count > 0 then
-        offset = #s + 1
-        local str = string.format(
-          "%s%s%d%s",
-          segment.prefix,
-          conf.left_bubble_delimiter,
-          segment.count,
-          conf.right_bubble_delimiter
-        )
-        add_hl("OctoMissingDetails", line_idx, offset, offset + string.len(segment.prefix))
-        add_hl(
-          segment.delimiter_hl,
-          line_idx,
-          offset + strlen(segment.prefix),
-          offset + strlen(segment.prefix) + strlen(conf.left_bubble_delimiter)
-        )
-        add_hl(
-          segment.center_hl,
-          line_idx,
-          offset + strlen(segment.prefix) + strlen(conf.left_bubble_delimiter),
-          offset + strlen(str) - strlen(conf.right_bubble_delimiter)
-        )
-        add_hl(
-          segment.delimiter_hl,
-          line_idx,
-          offset + strlen(str) - strlen(conf.right_bubble_delimiter),
-          offset + strlen(str)
-        )
-        s = s .. " " .. str
-      end
-    end
-
-    table.insert(lines, s)
-    line_idx = line_idx + 1
-  end
+  table.sort(self._sorted_file_lines)
 
   local right = current_review.layout.right
   local left = current_review.layout.left
