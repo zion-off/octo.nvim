@@ -26,6 +26,7 @@ local M = {}
 ---@field bodyMetadata BodyMetadata
 ---@field commentsMetadata CommentMetadata[]
 ---@field threadsMetadata ThreadMetadata[]
+---@field metadata_panel? MetadataPanel
 ---@field private node octo.PullRequest|octo.Issue|octo.Release|octo.Discussion|octo.Repository
 ---@field taggable_users? string[] list of taggable users for the buffer. Trigger with @
 ---@field owner? string
@@ -168,19 +169,44 @@ end
 function OctoBuffer:render_issue()
   self:clear()
   local obj = self:isPullRequest() and self:pullRequest() or self:issue()
+  local conf = config.values
 
   -- write title
   writers.write_title(self.bufnr, obj.title, 1)
-
-  -- write details in buffer
-  writers.write_details(self.bufnr, obj)
 
   -- write issue/pr status
   local state = utils.get_displayed_state(self.kind == "issue", obj.state, obj.stateReason)
   writers.write_state(self.bufnr, state:upper(), self.number)
 
-  -- write body
-  writers.write_body(self.bufnr, obj)
+  -- handle metadata: either show in panel or in main buffer
+  if conf.metadata_panel and conf.metadata_panel.enabled then
+    -- Create/update metadata panel
+    if not self.metadata_panel or not self.metadata_panel:buf_loaded() then
+      local MetadataPanel = require("octo.ui.metadata-panel").MetadataPanel
+      self.metadata_panel = MetadataPanel:new(self.bufnr)
+    end
+    -- Ensure buffer is initialized before writing
+    if not self.metadata_panel:buf_loaded() then
+      self.metadata_panel:init_buffer()
+    end
+    -- Write details to panel
+    local success = pcall(writers.write_details_to_panel, self.metadata_panel, obj)
+    -- Open panel if not already open (and data was written successfully)
+    if success and not self.metadata_panel:is_open() then
+      self.metadata_panel:open()
+    end
+  else
+    -- Close panel if config was disabled
+    if self.metadata_panel then
+      self.metadata_panel:close()
+    end
+    -- Write details in main buffer (original behavior)
+    writers.write_details(self.bufnr, obj)
+  end
+
+  -- write body - starts at line 3 if using panel, or after details if not
+  local body_line = (conf.metadata_panel and conf.metadata_panel.enabled) and 3 or nil
+  writers.write_body(self.bufnr, obj, body_line)
 
   -- write body reactions
   local reaction_line ---@type integer?
@@ -208,6 +234,26 @@ function OctoBuffer:render_threads(threads)
   writers.write_threads(self.bufnr, threads)
   vim.bo[self.bufnr].modified = false
   self.ready = true
+end
+
+---Toggles the metadata panel visibility
+function OctoBuffer:toggle_metadata_panel()
+  if not (self:isIssue() or self:isPullRequest()) then
+    return
+  end
+
+  local conf = config.values
+  if not conf.metadata_panel or not conf.metadata_panel.enabled then
+    utils.info "Metadata panel is disabled in config"
+    return
+  end
+
+  if not self.metadata_panel then
+    local MetadataPanel = require("octo.ui.metadata-panel").MetadataPanel
+    self.metadata_panel = MetadataPanel:new(self.bufnr)
+  end
+
+  self.metadata_panel:toggle()
 end
 
 ---Configures the buffer

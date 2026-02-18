@@ -64,6 +64,10 @@ local M = {}
 ---@field size number
 ---@field use_icons boolean
 
+---@class OctoConfigMetadataPanel
+---@field size number
+---@field enabled boolean
+
 ---@class OctoConfigUi
 ---@field use_signcolumn boolean
 ---@field use_statuscolumn boolean
@@ -146,6 +150,7 @@ local M = {}
 ---@field runs OctoConfigRuns
 ---@field pull_requests OctoConfigPR
 ---@field file_panel OctoConfigFilePanel
+---@field metadata_panel OctoConfigMetadataPanel
 ---@field colors OctoConfigColors
 ---@field mappings { [OctoMappingsWindow]: OctoMappingsList}
 ---@field mappings_disable_default boolean
@@ -294,6 +299,10 @@ function M.get_default_values()
       size = 40, -- panel width in columns
       use_icons = true,
     },
+    metadata_panel = {
+      size = 50, -- panel width in columns
+      enabled = true, -- show metadata panel for issues/PRs
+    },
     colors = {
       white = "#ffffff",
       grey = "#2A354C",
@@ -347,6 +356,7 @@ function M.get_default_values()
         reload = { lhs = "<C-r>", desc = "reload issue" },
         open_in_browser = { lhs = "<C-b>", desc = "open issue in browser" },
         copy_url = { lhs = "<C-y>", desc = "copy url to system clipboard" },
+        toggle_metadata_panel = { lhs = "<localleader>tm", desc = "toggle metadata panel" },
         add_assignee = { lhs = "<localleader>aa", desc = "add assignee" },
         remove_assignee = { lhs = "<localleader>ad", desc = "remove assignee" },
         create_label = { lhs = "<localleader>lc", desc = "create label" },
@@ -398,6 +408,7 @@ function M.get_default_values()
         copy_url = { lhs = "<C-y>", desc = "copy url to system clipboard" },
         copy_sha = { lhs = "<C-e>", desc = "copy commit SHA to system clipboard" },
         goto_file = { lhs = "gf", desc = "go to file" },
+        toggle_metadata_panel = { lhs = "<localleader>tm", desc = "toggle metadata panel" },
         add_assignee = { lhs = "<localleader>aa", desc = "add assignee" },
         remove_assignee = { lhs = "<localleader>ad", desc = "remove assignee" },
         create_label = { lhs = "<localleader>lc", desc = "create label" },
@@ -740,6 +751,10 @@ function M.validate_config()
     if validate_type(config.file_panel, "file_panel", "table") then
       validate_type(config.file_panel.size, "file_panel.size", "number")
       validate_type(config.file_panel.use_icons, "file_panel.use_icons", "boolean")
+    end
+    if validate_type(config.metadata_panel, "metadata_panel", "table") then
+      validate_type(config.metadata_panel.size, "metadata_panel.size", "number")
+      validate_type(config.metadata_panel.enabled, "metadata_panel.enabled", "boolean")
     end
     validate_aliases()
     validate_pickers()

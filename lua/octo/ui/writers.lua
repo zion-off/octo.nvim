@@ -965,6 +965,392 @@ function M.write_details(bufnr, issue, update, include_status)
   end
 end
 
+--- Write issue or PR details to a metadata panel
+---@param panel MetadataPanel
+---@param issue octo.PullRequest|octo.Issue
+function M.write_details_to_panel(panel, issue)
+  -- Critical: Validate panel object
+  if not panel or not panel.bufid or not vim.api.nvim_buf_is_valid(panel.bufid) then
+    return
+  end
+
+  panel:clear()
+
+  local is_issue = detect_issue_from_url(issue.url)
+  local details = {} ---@type [string, string][][]
+
+  -- Helper to add a section separator
+  local function add_separator()
+    table.insert(details, {})
+  end
+
+  -- Helper to add a subtle section divider
+  local function add_section_divider()
+    table.insert(details, {
+      { "   ", "Normal" },
+    })
+  end
+
+  -- Add header with emoji icon
+  local header_icon = is_issue and " " or " "
+  table.insert(details, {
+    { " " .. header_icon .. "  " .. (is_issue and "Issue" or "Pull Request"), "OctoIssueTitle" },
+  })
+  add_separator()
+
+  -- Use add_details_line and other helper functions to build details
+  add_status_detail(details, is_issue, issue.state, issue.stateReason, issue.isDraft)
+
+  table.insert(details, {
+    { "Repo: ", "OctoDetailsLabel" },
+    { " " .. (select(2, utils.parse_url(issue.url)) or ""), "OctoDetailsValue" },
+  })
+
+  -- author
+  local author_vt = { { "Created by: ", "OctoDetailsLabel" } }
+  local opts = {}
+
+  issue.author = logins.format_author(issue.author)
+  if issue.author.login == "ghost" then
+    opts = { ghost = true }
+  end
+
+  local author_bubble = bubbles.make_user_bubble(issue.author.login, issue.viewerDidAuthor, opts)
+
+  vim.list_extend(author_vt, author_bubble)
+  if not utils.is_blank(issue.authorAssociation) and issue.authorAssociation ~= "NONE" then
+    table.insert(author_vt, { " (" .. format_author_association(issue.authorAssociation) .. ")", "OctoDetailsLabel" })
+  end
+  table.insert(details, author_vt)
+
+  add_details_line(details, "Created", issue.createdAt, "date")
+  if issue.state == "CLOSED" then
+    add_details_line(details, "Closed", issue.closedAt, "date")
+  else
+    add_details_line(details, "Updated", issue.updatedAt, "date")
+  end
+
+  -- Section: Team & Assignment
+  add_section_divider()
+  -- assignees
+  local assignees_vt = {
+    { "Assignees: ", "Comment" },  -- Dimmed label
+  }
+  if issue.assignees and #issue.assignees.nodes > 0 then
+    for _, assignee in ipairs(issue.assignees.nodes) do
+      local user_bubble = bubbles.make_user_bubble(assignee.login, assignee.isViewer, { margin_width = 1 })
+      vim.list_extend(assignees_vt, user_bubble)
+    end
+  else
+    table.insert(assignees_vt, { "No one assigned ", "OctoMissingDetails" })
+  end
+  table.insert(details, assignees_vt)
+
+  -- projects v2
+  if issue.projectItems and #issue.projectItems.nodes > 0 then
+    local projects_vt = {
+      { "Projects (v2): ", "Comment" },  -- Dimmed label
+    }
+    for idx, item in ipairs(issue.projectItems.nodes) do
+      if item.project ~= vim.NIL and item.project then
+        if idx >= 2 then
+          table.insert(projects_vt, { ", " })
+        end
+
+        local status = nil
+
+        for _, fieldValues in ipairs(item.fieldValues.nodes) do
+          if fieldValues.field ~= nil and fieldValues.field.name == "Status" then
+            status = fieldValues.name
+          end
+        end
+
+        if status == nil then
+          table.insert(projects_vt, { "No status", "OctoRed" })
+        else
+          table.insert(projects_vt, { status })
+        end
+
+        table.insert(projects_vt, { " (", "OctoDetailsLabel" })
+        table.insert(projects_vt, { item.project.title })
+        table.insert(projects_vt, { ")", "OctoDetailsLabel" })
+      end
+    end
+    table.insert(details, projects_vt)
+  end
+
+  --- Parent
+  if is_issue then
+    local parent = issue.parent
+    local builder = TextChunkBuilder:new():detail_label "Parent"
+
+    if not utils.is_blank(parent) then
+      local obj = parent --[[@as EntryObject]]
+      local icon = utils.get_icon { kind = "issue", obj = obj }
+      builder:text(icon[1], icon[2]):detail_value("#" .. tostring(parent.number) .. " " .. parent.title .. " ")
+    else
+      builder:detail_missing "None yet"
+    end
+
+    builder:write_detail_line(details)
+  end
+
+  -- Section: Organization
+  add_section_divider()
+  -- milestones
+  local ms = issue.milestone
+  local milestone_vt = {
+    { "Milestone: ", "Comment" },  -- Dimmed label
+  }
+  if ms ~= nil and ms ~= vim.NIL then
+    table.insert(milestone_vt, { ms.title, "OctoDetailsValue" })
+    table.insert(milestone_vt, { string.format(" (%s)", utils.state_message_map[ms.state]), "OctoDetailsValue" })
+  else
+    table.insert(milestone_vt, { "No milestone", "OctoMissingDetails" })
+  end
+  table.insert(details, milestone_vt)
+
+  -- labels
+  local labels_vt = {
+    { "Labels: ", "Comment" },  -- Dimmed label
+  }
+  if #issue.labels.nodes > 0 then
+    for _, label in ipairs(issue.labels.nodes) do
+      local label_bubble = bubbles.make_label_bubble(label.name, label.color, { right_margin_width = 1 })
+      vim.list_extend(labels_vt, label_bubble)
+    end
+  else
+    table.insert(labels_vt, { "None yet", "OctoMissingDetails" })
+  end
+  table.insert(details, labels_vt)
+
+  -- issue type
+  local issue_type_vt = {
+    { "Type: ", "Comment" },  -- Dimmed label
+  }
+
+  if not utils.is_blank(issue.issueType) then
+    local issue_type = issue.issueType
+    ---@diagnostic disable-next-line
+    local issue_type_bubble = bubbles.make_label_bubble(issue_type.name, issue_type.color)
+    vim.list_extend(issue_type_vt, issue_type_bubble)
+  else
+    table.insert(issue_type_vt, { "No type", "OctoMissingDetails" })
+  end
+  if is_issue then
+    table.insert(details, issue_type_vt)
+  end
+
+  -- Section: Pull Request Details
+  add_section_divider()
+  -- additional details for pull requests
+  if issue.commits then
+    -- reviewers
+    local reviewers = {} ---@type table<string, string[]>
+    ---@param name string
+    ---@param state string
+    local function collect_reviewer(name, state)
+      if not reviewers[name] then
+        reviewers[name] = { state }
+      else
+        local states = reviewers[name]
+        if not vim.tbl_contains(states, state) then
+          table.insert(states, state)
+        end
+        reviewers[name] = states
+      end
+    end
+    ---@type (octo.PullRequestTimelineItem|octo.IssueTimelineItem)[]
+    local timeline_nodes = {}
+    for _, item in ipairs(issue.timelineItems.nodes) do
+      if item ~= vim.NIL then
+        table.insert(timeline_nodes, item)
+      end
+    end
+    for _, item in ipairs(timeline_nodes) do
+      if item.__typename == "PullRequestReview" then
+        local name = item.author.login
+        collect_reviewer(name, item.state)
+      end
+    end
+    if issue.reviewRequests and issue.reviewRequests.totalCount > 0 then
+      for _, reviewRequest in ipairs(issue.reviewRequests.nodes) do
+        if reviewRequest.requestedReviewer ~= vim.NIL then
+          local name = reviewRequest.requestedReviewer.login or reviewRequest.requestedReviewer.name
+          collect_reviewer(name, "REVIEW_REQUIRED")
+        end
+      end
+    end
+    -- Reviewers header
+    table.insert(details, {
+      { "Reviewers:", "Comment" },  -- Dimmed label
+    })
+
+    if #vim.tbl_keys(reviewers) > 0 then
+      ---@type string[]
+      local reviewer_names = vim.tbl_keys(reviewers)
+      for _, name in ipairs(reviewer_names) do
+        local strongest_review = utils.calculate_strongest_review_state(reviewers[name])
+        name = logins.format_author({ login = name }).login
+        local reviewer_vt = {
+          { "  • ", "Comment" },  -- Bullet point with indent
+          { name, "OctoUser" },
+          { " ", "Normal" },
+          { utils.state_icon_map[strongest_review], utils.state_hl_map[strongest_review] },
+        }
+        table.insert(details, reviewer_vt)
+      end
+    else
+      table.insert(details, {
+        { "  ", "Normal" },
+        { "No reviewers", "OctoMissingDetails" },
+      })
+    end
+
+    ---Development
+    local development_vt = {
+      { "Development: ", "Comment" },  -- Dimmed label
+    }
+    if issue.closingIssuesReferences and issue.closingIssuesReferences.totalCount > 0 then
+      for _, closing_issue in ipairs(issue.closingIssuesReferences.nodes) do
+        local obj = closing_issue --[[@as EntryObject]]
+        local icon = utils.get_icon { kind = "issue", obj = obj }
+        table.insert(development_vt, icon)
+        table.insert(
+          development_vt,
+          { " #" .. tostring(closing_issue.number) .. " " .. closing_issue.title .. " ", "OctoDetailsValue" }
+        )
+      end
+    else
+      table.insert(development_vt, { "None yet", "OctoMissingDetails" })
+    end
+    table.insert(details, development_vt)
+
+    -- merged_by
+    if issue.merged then
+      local merged_by_vt = { { "Merged by: ", "Comment" } }  -- Dimmed label
+      local name = issue.mergedBy.login or issue.mergedBy.name
+      local is_viewer = issue.mergedBy.isViewer or false
+      local user_bubble = bubbles.make_user_bubble(name, is_viewer)
+      vim.list_extend(merged_by_vt, user_bubble)
+      table.insert(details, merged_by_vt)
+    end
+
+    -- from/into branches
+    local branches_vt = {
+      { "From: ", "Comment" },  -- Dimmed label
+      { issue.headRefName, "OctoDetailsValue" },
+      { " Into: ", "Comment" },  -- Dimmed label
+      { issue.baseRefName, "OctoDetailsValue" },
+    }
+    table.insert(details, branches_vt)
+
+    -- review decision
+    if issue.reviewDecision and issue.reviewDecision ~= vim.NIL then
+      local decision_vt = {
+        { "Review decision: ", "Comment" },  -- Dimmed label
+        { utils.state_message_map[issue.reviewDecision] },
+      }
+      table.insert(details, decision_vt)
+    end
+
+    -- checks
+    if issue.statusCheckRollup and issue.statusCheckRollup ~= vim.NIL then
+      local state = issue.statusCheckRollup.state
+      local state_info = utils.state_map[state]
+      ---@type string
+      local message = state_info.symbol .. state
+      local checks_vt = {
+        { "Checks: ", "Comment" },  -- Dimmed label
+        { message, state_info.hl },
+      }
+      table.insert(details, checks_vt)
+    end
+
+    -- merge state
+    if not issue.merged and issue.mergeable then
+      local merge_state_vt = {
+        { "Merge: ", "Comment" },  -- Dimmed label
+      }
+
+      if issue.mergeable == "MERGEABLE" then
+        table.insert(
+          merge_state_vt,
+          { utils.merge_state_message_map[issue.mergeStateStatus], utils.merge_state_hl_map[issue.mergeStateStatus] }
+        )
+      else
+        table.insert(
+          merge_state_vt,
+          { utils.mergeable_message_map[issue.mergeable], utils.mergeable_hl_map[issue.mergeable] }
+        )
+      end
+
+      table.insert(details, merge_state_vt)
+    end
+
+    if not issue.merged and issue.autoMergeRequest and issue.autoMergeRequest ~= vim.NIL then
+      local auto_merge_vt = {
+        { "Auto-merge: ", "Comment" },  -- Dimmed label
+        { "ENABLED", "OctoStateApproved" },
+        { " by " },
+        { issue.autoMergeRequest.enabledBy.login, "OctoUser" },
+        { " (" .. utils.auto_merge_method_map[issue.autoMergeRequest.mergeMethod] .. ")" },
+      }
+      table.insert(details, auto_merge_vt)
+    end
+
+    -- changes
+    local changes_vt = {
+      { "Commits: ", "Comment" },  -- Dimmed label
+      { tostring(issue.commits.totalCount), "OctoDetailsValue" },
+      { " Changed files: ", "Comment" },  -- Dimmed label
+      { tostring(issue.changedFiles), "OctoDetailsValue" },
+      { " (", "Comment" },  -- Dimmed label
+      { string.format("+%d ", issue.additions), "OctoDiffstatAdditions" },
+      { string.format("-%d ", issue.deletions), "OctoDiffstatDeletions" },
+    }
+    local diffstat = utils.diffstat { additions = issue.additions, deletions = issue.deletions }
+    if diffstat.additions > 0 then
+      table.insert(changes_vt, { string.rep("■", diffstat.additions), "OctoDiffstatAdditions" })
+    end
+    if diffstat.deletions > 0 then
+      table.insert(changes_vt, { string.rep("■", diffstat.deletions), "OctoDiffstatDeletions" })
+    end
+    if diffstat.neutral > 0 then
+      table.insert(changes_vt, { string.rep("■", diffstat.neutral), "OctoDiffstatNeutral" })
+    end
+    table.insert(changes_vt, { ")", "OctoDetailsLabel" })
+    table.insert(details, changes_vt)
+  end
+
+  add_subscription_detail(details, issue.viewerSubscription)
+
+  -- Write details to panel buffer as lines with virtual text
+  vim.api.nvim_set_option_value("modifiable", true, { buf = panel.bufid })
+
+  local lines = {}
+  for _ = 1, #details do
+    table.insert(lines, "")
+  end
+  vim.api.nvim_buf_set_lines(panel.bufid, 0, -1, false, lines)
+
+  -- Add left padding to each line for visual polish
+  for i, d in ipairs(details) do
+    local padded_chunks = {}
+    -- Add left padding (except for header which already has padding)
+    if i > 1 and #d > 0 and d[1][1] and not vim.startswith(d[1][1], " ") then
+      table.insert(padded_chunks, { "  ", "Normal" })
+    end
+    -- Add the original chunks
+    for _, chunk in ipairs(d) do
+      table.insert(padded_chunks, chunk)
+    end
+    panel:write_virtual_text(i, padded_chunks)
+  end
+
+  vim.api.nvim_set_option_value("modifiable", false, { buf = panel.bufid })
+end
+
 ---@param bufnr integer
 ---@param comment octo.ReviewThreadCommentFragment|octo.fragments.DiscussionComment|octo.fragments.PullRequestReview|octo.fragments.IssueComment|{
 ---  replyToRest: string,

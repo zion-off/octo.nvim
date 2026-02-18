@@ -283,6 +283,12 @@ return {
   reload = function()
     require("octo.commands").reload()
   end,
+  toggle_metadata_panel = function()
+    local buffer = utils.get_current_buffer()
+    if buffer then
+      buffer:toggle_metadata_panel()
+    end
+  end,
   open_in_browser = function()
     require("octo.navigation").open_in_browser()
   end,

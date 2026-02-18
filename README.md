@@ -9,3 +9,4 @@ running list of features implemented on this fork:
 - review: show commit messages beside commit hashes
 - review: enter commit level pr review by navigating to the commit hash
 - diff: deleted/created files have syntax highlighting
+- pr: improved pr overview ui
