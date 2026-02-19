@@ -101,4 +101,17 @@ function M.update_signs(bufnr)
   })
 end
 
+function M.close_metadata_panel_on_buf_delete(bufnr)
+  define({ "BufDelete" }, {
+    group = "octobuffer_autocmds",
+    buffer = bufnr,
+    callback = function()
+      local octo_buf = octo_buffers[bufnr]
+      if octo_buf and octo_buf.metadata_panel then
+        octo_buf.metadata_panel:destroy()
+      end
+    end,
+  })
+end
+
 return M

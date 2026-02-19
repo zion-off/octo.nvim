@@ -1001,8 +1001,24 @@ M.get_pull_request_uri = uri.get_pull_request_uri
 M.get_discussion_uri = uri.get_discussion_uri
 M.get_release_uri = uri.get_release_uri
 
+---Close all existing octo buffers of the given kind, including their metadata panels.
+---@param kind string The picker kind (e.g. "pull_request", "issue")
+local function close_octo_buffers_by_kind(kind)
+  local buf_kind = kind == "pull_request" and "pull" or kind
+  for bufnr, octo_buf in pairs(octo_buffers) do
+    if octo_buf.kind == buf_kind then
+      if octo_buf.metadata_panel then
+        octo_buf.metadata_panel:destroy()
+      end
+      octo_buffers[bufnr] = nil
+      pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    end
+  end
+end
+
 ---Helper method opening octo buffers
 function M.get(kind, ...)
+  close_octo_buffers_by_kind(kind)
   if kind == "issue" then
     M.get_issue(...)
   elseif kind == "pull_request" then

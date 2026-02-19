@@ -280,6 +280,7 @@ function OctoBuffer:configure()
   end)
 
   self:apply_mappings()
+  autocmds.close_metadata_panel_on_buf_delete(self.bufnr)
 end
 
 ---Accumulates all the taggable users into a single list that
