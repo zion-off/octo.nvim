@@ -76,6 +76,12 @@ function OctoBuffer:new(opts)
     this.kind = "reviewthread"
   end
 
+  -- Preserve metadata_panel from the existing buffer instance when reloading
+  local existing = octo_buffers[this.bufnr]
+  if existing and existing.metadata_panel then
+    this.metadata_panel = existing.metadata_panel
+  end
+
   setmetatable(this, self)
   octo_buffers[this.bufnr] = this
   return this
