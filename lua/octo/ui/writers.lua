@@ -965,6 +965,88 @@ function M.write_details(bufnr, issue, update, include_status)
   end
 end
 
+---Groups check contexts and appends formatted lines to a details table.
+---Falls back to a single rollup line when contexts are not yet available.
+---@param details [string,string][][]
+---@param issue octo.PullRequest|octo.Issue
+local function build_checks_details(details, issue)
+  if not issue.statusCheckRollup or issue.statusCheckRollup == vim.NIL then
+    return
+  end
+
+  local contexts = issue.check_contexts
+  if not contexts or #contexts == 0 then
+    -- Fallback: single rollup state line
+    local state = issue.statusCheckRollup.state
+    local state_info = utils.state_map[state] or { symbol = "? ", hl = "Comment" }
+    table.insert(details, {
+      { "Checks: ", "Comment" },
+      { state_info.symbol .. state, state_info.hl },
+    })
+    return
+  end
+
+  -- Group individual check contexts.
+  -- Uses the same unified resolution as clairo: conclusion ?? state for status,
+  -- name ?? context for label, with workflowName prefix when present.
+  local groups = {
+    { key = "running",   label = "⟳ Running",   hl = "OctoStatePending",   items = {} },
+    { key = "failed",    label = "✗ Failed",     hl = "OctoStateDismissed", items = {} },
+    { key = "passed",    label = "✓ Passed",     hl = "OctoStateApproved",  items = {} },
+    { key = "skipped",   label = "○ Skipped",    hl = "OctoStateDraftFloat", items = {} },
+    { key = "cancelled", label = "⊘ Cancelled",  hl = "OctoDetailsLabel",   items = {} },
+  }
+
+  for _, ctx in ipairs(contexts) do
+    local job_name = ctx.name or ctx.context or ""
+    local display_name = (ctx.workflowName and ctx.workflowName ~= vim.NIL)
+      and (ctx.workflowName .. " / " .. job_name)
+      or job_name
+
+    local conclusion = ctx.conclusion or ctx.state
+    local bucket
+    if conclusion == "SUCCESS" then
+      bucket = "passed"
+    elseif conclusion == "FAILURE" or conclusion == "ERROR" then
+      bucket = "failed"
+    elseif conclusion == "SKIPPED" or conclusion == "NEUTRAL" then
+      bucket = "skipped"
+    elseif conclusion == "CANCELLED" then
+      bucket = "cancelled"
+    elseif ctx.status == "IN_PROGRESS" or ctx.status == "QUEUED" or ctx.status == "WAITING"
+        or conclusion == "PENDING" or conclusion == "EXPECTED" then
+      bucket = "running"
+    else
+      bucket = "running"
+    end
+
+    for _, g in ipairs(groups) do
+      if g.key == bucket then
+        table.insert(g.items, display_name)
+        break
+      end
+    end
+  end
+
+  -- Section header
+  table.insert(details, { { " Checks", "OctoDetailsLabel" } })
+
+  for _, group in ipairs(groups) do
+    if #group.items > 0 then
+      -- Group header with count
+      table.insert(details, {
+        { "  " .. group.label .. " (" .. #group.items .. ")", group.hl },
+      })
+      -- Individual names
+      for _, name in ipairs(group.items) do
+        table.insert(details, {
+          { "    " .. name, "Comment" },
+        })
+      end
+    end
+  end
+end
+
 --- Write issue or PR details to a metadata panel
 ---@param panel MetadataPanel
 ---@param issue octo.PullRequest|octo.Issue
@@ -1255,17 +1337,7 @@ function M.write_details_to_panel(panel, issue)
     end
 
     -- checks
-    if issue.statusCheckRollup and issue.statusCheckRollup ~= vim.NIL then
-      local state = issue.statusCheckRollup.state
-      local state_info = utils.state_map[state]
-      ---@type string
-      local message = state_info.symbol .. state
-      local checks_vt = {
-        { "Checks: ", "Comment" },  -- Dimmed label
-        { message, state_info.hl },
-      }
-      table.insert(details, checks_vt)
-    end
+    build_checks_details(details, issue)
 
     -- merge state
     if not issue.merged and issue.mergeable then
@@ -1325,27 +1397,45 @@ function M.write_details_to_panel(panel, issue)
 
   add_subscription_detail(details, issue.viewerSubscription)
 
-  -- Write details to panel buffer as lines with virtual text
+  -- Write details to panel buffer as lines with virtual text.
+  -- Leading whitespace is written as actual buffer content so that breakindent
+  -- indents wrapped continuations to the correct column.
   vim.api.nvim_set_option_value("modifiable", true, { buf = panel.bufid })
 
   local lines = {}
-  for _ = 1, #details do
-    table.insert(lines, "")
-  end
-  vim.api.nvim_buf_set_lines(panel.bufid, 0, -1, false, lines)
-
-  -- Add left padding to each line for visual polish
+  local virt_items = {} -- { chunks, col }
   for i, d in ipairs(details) do
     local padded_chunks = {}
     -- Add left padding (except for header which already has padding)
     if i > 1 and #d > 0 and d[1][1] and not vim.startswith(d[1][1], " ") then
       table.insert(padded_chunks, { "  ", "Normal" })
     end
-    -- Add the original chunks
     for _, chunk in ipairs(d) do
       table.insert(padded_chunks, chunk)
     end
-    panel:write_virtual_text(i, padded_chunks)
+
+    -- Extract leading whitespace from the first chunk into the actual buffer
+    -- line so breakindent knows where to indent wrapped text.
+    local indent = ""
+    if #padded_chunks > 0 and padded_chunks[1][1] then
+      indent = padded_chunks[1][1]:match("^(%s*)") or ""
+      if indent == padded_chunks[1][1] then
+        table.remove(padded_chunks, 1) -- entire first chunk was whitespace
+      elseif #indent > 0 then
+        padded_chunks[1] = { padded_chunks[1][1]:sub(#indent + 1), padded_chunks[1][2] }
+      end
+    end
+
+    table.insert(lines, indent)
+    table.insert(virt_items, { chunks = padded_chunks, col = #indent })
+  end
+
+  vim.api.nvim_buf_set_lines(panel.bufid, 0, -1, false, lines)
+
+  for i, item in ipairs(virt_items) do
+    if #item.chunks > 0 then
+      panel:write_virtual_text(i, item.chunks, { col = item.col })
+    end
   end
 
   vim.api.nvim_set_option_value("modifiable", false, { buf = panel.bufid })

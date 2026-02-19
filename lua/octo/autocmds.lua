@@ -107,8 +107,11 @@ function M.close_metadata_panel_on_buf_delete(bufnr)
     buffer = bufnr,
     callback = function()
       local octo_buf = octo_buffers[bufnr]
-      if octo_buf and octo_buf.metadata_panel then
-        octo_buf.metadata_panel:destroy()
+      if octo_buf then
+        if octo_buf.metadata_panel then
+          octo_buf.metadata_panel:destroy()
+        end
+        octo_buf:stop_checks_polling()
       end
     end,
   })

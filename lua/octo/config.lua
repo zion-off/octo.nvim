@@ -300,8 +300,9 @@ function M.get_default_values()
       use_icons = true,
     },
     metadata_panel = {
-      size = 50, -- panel width in columns
+      size = 67, -- panel width in columns
       enabled = true, -- show metadata panel for issues/PRs
+      checks_poll_interval = 30, -- seconds between check status polls while checks are running; 0 to disable
     },
     colors = {
       white = "#ffffff",
@@ -755,6 +756,7 @@ function M.validate_config()
     if validate_type(config.metadata_panel, "metadata_panel", "table") then
       validate_type(config.metadata_panel.size, "metadata_panel.size", "number")
       validate_type(config.metadata_panel.enabled, "metadata_panel.enabled", "boolean")
+      validate_type(config.metadata_panel.checks_poll_interval, "metadata_panel.checks_poll_interval", "number")
     end
     validate_aliases()
     validate_pickers()

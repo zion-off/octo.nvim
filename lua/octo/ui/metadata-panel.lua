@@ -28,6 +28,7 @@ MetadataPanel.winopts = {
   spell = false,
   wrap = true,
   linebreak = true,
+  breakindent = true,
   cursorline = false,
   signcolumn = "no",
   foldmethod = "manual",
@@ -201,13 +202,15 @@ function MetadataPanel:write_virtual_text(line, chunks, opts)
   end
 
   opts = opts or {}
+  local col = opts.col or 0
+  opts.col = nil
   local extmark_opts = vim.tbl_extend("force", {
     virt_text = chunks,
     virt_text_pos = "inline",
     hl_mode = "combine",
   }, opts)
 
-  pcall(vim.api.nvim_buf_set_extmark, self.bufid, constants.OCTO_DETAILS_VT_NS, line - 1, 0, extmark_opts)
+  pcall(vim.api.nvim_buf_set_extmark, self.bufid, constants.OCTO_DETAILS_VT_NS, line - 1, col, extmark_opts)
 end
 
 ---Clear the metadata panel buffer

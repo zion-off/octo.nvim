@@ -280,6 +280,16 @@ query($endCursor: String) {
       .. fragments.project_v2_item_status_changed_event
   end
 
+  ---@class octo.StatusCheck
+  ---@field __typename string
+  ---@field name? string
+  ---@field context? string
+  ---@field status? string
+  ---@field conclusion? string
+  ---@field state? string
+  ---@field startedAt? string
+  ---@field workflowName? string
+
   ---@class octo.IssueTimelineItemConnection : octo.fragments.IssueTimelineItemsConnection
   --- @field pageInfo octo.PageInfo
 

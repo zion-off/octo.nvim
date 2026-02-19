@@ -1010,6 +1010,7 @@ local function close_octo_buffers_by_kind(kind)
       if octo_buf.metadata_panel then
         octo_buf.metadata_panel:destroy()
       end
+      octo_buf:stop_checks_polling()
       octo_buffers[bufnr] = nil
       pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
     end

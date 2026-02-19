@@ -27,6 +27,7 @@ local M = {}
 ---@field commentsMetadata CommentMetadata[]
 ---@field threadsMetadata ThreadMetadata[]
 ---@field metadata_panel? MetadataPanel
+---@field checks_timer? uv_timer_t
 ---@field private node octo.PullRequest|octo.Issue|octo.Release|octo.Discussion|octo.Repository
 ---@field taggable_users? string[] list of taggable users for the buffer. Trigger with @
 ---@field owner? string
@@ -352,6 +353,85 @@ function OctoBuffer:async_fetch_issues()
       },
     },
   }
+end
+
+---Fetches detailed check run data for a PR and updates the metadata panel.
+---Starts or stops polling depending on whether any checks are still running.
+function OctoBuffer:async_fetch_checks()
+  if self.kind ~= "pull" then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(self.bufnr) then
+    return
+  end
+  local conf = config.values
+  if not conf.metadata_panel or not conf.metadata_panel.enabled then
+    return
+  end
+
+  gh.pr.view {
+    tostring(self.number),
+    repo = self.repo,
+    json = "statusCheckRollup",
+    opts = {
+      cb = gh.create_callback {
+        success = function(output)
+          local data = vim.json.decode(output)
+          local checks = data.statusCheckRollup
+          if not checks or checks == vim.NIL then
+            return
+          end
+          self.node.check_contexts = checks
+          if self.metadata_panel and self.metadata_panel:is_open() then
+            writers.write_details_to_panel(self.metadata_panel, self.node)
+          end
+          self:_manage_checks_polling()
+        end,
+        failure = function() end,
+      },
+    },
+  }
+end
+
+---Starts or stops the checks polling timer based on current check state.
+function OctoBuffer:_manage_checks_polling()
+  local interval = (config.values.metadata_panel and config.values.metadata_panel.checks_poll_interval) or 30
+  if interval <= 0 then
+    return
+  end
+
+  local has_running = false
+  for _, ctx in ipairs((self.node and self.node.check_contexts) or {}) do
+    local conclusion = ctx.conclusion or ctx.state
+    if ctx.status == "IN_PROGRESS" or ctx.status == "QUEUED" or ctx.status == "WAITING"
+        or conclusion == "PENDING" or conclusion == "EXPECTED" then
+      has_running = true
+      break
+    end
+  end
+
+  if has_running and not self.checks_timer then
+    local timer = vim.uv.new_timer()
+    if not timer then
+      return
+    end
+    self.checks_timer = timer
+    local ms = interval * 1000
+    timer:start(ms, ms, vim.schedule_wrap(function()
+      self:async_fetch_checks()
+    end))
+  elseif not has_running and self.checks_timer then
+    self:stop_checks_polling()
+  end
+end
+
+---Stops the checks polling timer if active.
+function OctoBuffer:stop_checks_polling()
+  if self.checks_timer then
+    self.checks_timer:stop()
+    self.checks_timer:close()
+    self.checks_timer = nil
+  end
 end
 
 ---Syncs all the comments/title/body with GitHub
